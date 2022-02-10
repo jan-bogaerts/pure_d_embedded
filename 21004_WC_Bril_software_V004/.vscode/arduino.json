@@ -1,0 +1,6 @@
+{
+    "configuration": "FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600,DebugLevel=none",
+    "board": "espressif:esp32:esp32",
+    "port": "COM4",
+    "sketch": "21004_WC_Bril_software_V004.ino"
+}
