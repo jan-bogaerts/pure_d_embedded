@@ -1,6 +1,7 @@
-/*********************************************************************************************************************/
+
+  /*********************************************************************************************************************/
 /*   WC BRIL 21004                                                                                                   */
-/*   wifinaam: "DENCK";                                                                                              */
+/*   wifinaam: "PURE-D-{chipId}";                                                                                              */
 /*   password: "123456789";                                                                                          */
 /*   IP ADRES: 192.168.4.1                                                                                           */
 /* > Versie : 001                                                                                                    */
@@ -26,11 +27,23 @@
 /*    Aantal filters vervangingen ook bij gevoegd                                                                    */
 /*    Interup sneller laten reageren aks de unit in werking is gegaan                                                */
 /*    Uit wifi door de drukknop                                                                                      */
+/* >  Version: 005
+      Date: 28/01/2022
+      Author: Jan Bogaerts
+      Changes: 
+        - change a bunch of global variabes to define (no more mem)
+        - add wifi ssid, wifi-pwd & sys-pwd to eeprom memory
+        - add full support for wifi enroll (expand wifi server)
+        - send udp packet upon wakeup & when certain values change
+        - monitor incomming udp messages and perform actuations accordingly
+        - code refactoring of for loops
+        - general code refactoring to remove spagetti a bit
+*/
 /*********************************************************************************************************************/
 
 /*********************************************************************************************************************/
 /*   WIFI GEGEVENS                                                                                                   */
-/*   ssid = PURE-D                                                                                                   */
+/*   ssid = PURE-D-{chipId}                                                                                                   */
 /*   password = 123456789                                                                                            */
 /*********************************************************************************************************************/
 
@@ -157,21 +170,23 @@
 #include <TimeLib.h>                                      // Libary voor de timers aan te spreken
 #include <EEPROM.h>                                       // Libary voor gegevens naar en van EEPROM vast te krijgen
 #include "Adafruit_VL53L0X.h"                             // Libary voor de afstands sensor
+#include <jsonlib.h>                                      // for parsing commands that come from the mobile
 #include <WiFi.h>                                         // Libary voor de wifi
-#define EEPROM_SIZE 100                                   // Voorbehouden EEPROM plaatsen
+#include <WiFiUdp.h>                                      // udp communication
+#define EEPROM_SIZE 459                                   // Voorbehouden EEPROM plaatsen (max of 3 strings is long)
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();                // Type afstands sensor
 
 
 /* INSTELBARE PARAMETERS */  
-long SoftwareVersie = 4;                                  // Dit is de sofware versie
+#define SOFWAREVERSION 5                                  // Dit is de sofware versie; fix -> change to define so that it no longer uses any memory
 int SleepTime = 5;                                        // Gaat om de 5 sec wakker worden en afstand meten
 int UpdateMemoryBootCounter=8640;                         // om de 8640x5sec = 43200sec = 720min = 12 uur naar EEPROM schrijven
 int TijdTestDraaien=20;                                   // Tijd dat de ventilator test draaid als men kort op de druknop drukt
 int VentSpeedTest=30;                                     // Snelheid dat de ventilator moet draaien bij een test in% (30%-100%)
-RTC_DATA_ATTR int VentSpeedNormaal = 50;                  // De waarde om de vent normaal te laten draaien in% (60)
+RTC_DATA_ATTR int VentSpeedNormaal = 50;                  // De waarde om de vent normaal te laten draaien in% (50)
 RTC_DATA_ATTR int VentSpeedTraag = 30;                    // De waarde om de vent traag te laten draaien in% (30)
 int VentTijdNaarTraag=240;                                // De tijd dat de ventilator over gaat van normaal snelheid naar trage snelheid in sec (240=4min)
-int VentNaloopTijdOpstaan=30;                             // De tijd dat de ventilator nog na draaid als men opstaat in sec
+RTC_DATA_ATTR int VentNaloopTijdOpstaan=30;               // De tijd dat de ventilator nog na draaid als men opstaat in sec
 int VentNaloopTijdDekeslDicht=10;                         // De tijd dat de ventilator nog na draaid als de deksel dicht gaat in sec
 RTC_DATA_ATTR int Volume=30;                              // Het volume van de audio (0=min 30=max)
 RTC_DATA_ATTR int GeurMeetTijd=4;                         // Tijd dat we tussen twee geur metingen gaan doen in sec. Niet onder de 4 sec gaan
@@ -195,11 +210,12 @@ int BatL3IO = 34;                                         // De IO lijn voor lij
 unsigned long BatL1=0;                                    // Hulp variabele voor de baterijen ledjes uit te lezen
 unsigned long BatL2=0;                                    // Hulp variabele voor de baterijen ledjes uit te lezen
 unsigned long BatL3=0;                                    // Hulp variabele voor de baterijen ledjes uit te lezen
-RTC_DATA_ATTR int Led1=0;                                 // Variabele om de waarde van de ledjes te vergelijken
-RTC_DATA_ATTR int Led2=0;                                 // Variabele om de waarde van de ledjes te vergelijken
-RTC_DATA_ATTR int Led3=0;                                 // Variabele om de waarde van de ledjes te vergelijken
-RTC_DATA_ATTR int Led4=0;                                 // Variabele om de waarde van de ledjes te vergelijken
-int DeltaBat=1000;                                        // Het waarde verschil tussen een lijn die hoog is of laag is
+//RTC_DATA_ATTR int Led1=0;                                 // Variabele om de waarde van de ledjes te vergelijken
+//RTC_DATA_ATTR int Led2=0;                                 // Variabele om de waarde van de ledjes te vergelijken
+//RTC_DATA_ATTR int Led3=0;                                 // Variabele om de waarde van de ledjes te vergelijken
+//RTC_DATA_ATTR int Led4=0;                                 // Variabele om de waarde van de ledjes te vergelijken
+RTC_DATA_ATTR int BatLevel = 0;                           // battery level 0-4 (0, 25%, 50%, 75%, 100%)
+#define DeltaBat 1000                                     // Het waarde verschil tussen een lijn die hoog is of laag is
 RTC_DATA_ATTR int BatterijVervangingen=0;                 // Het aantal keren dat de unit opnieuw onder spanning komt. Is te reseteen door eerst de drukknop in te houden en dan batterij insteken.
 int HeartBeadIO=16;                                       // De uitgang naar de batterij om de batterypack aan te houden
 
@@ -261,22 +277,23 @@ int LedWitIO=17;                                          // Witte led uitgang l
 int LedRoodIO=18;                                         // Rode led uitgang ligt op IO18
 
 // ----- VENTILATOR -----
-int VentSpeedMin=30;                                      // De absolute waarde die we naar de DAC mogen sturen voordat de ventilator stil valt
-int VentSpeedMax=220;                                     // De absolute waarde die we naar de DAC mogen sturen, hoger doet niks meer uit
-int VentSpeed=0;                                          // 0-100% 0=VentspeedMin 100%=VentspeedMax
-int Speed=0;                                              // Was vroeger ventspeed
-int VentSpeed255=0;                                       // De waarde gemap om door te geven 
-int VentSpeedIO=26;                                       // IO26 DAC uitgang om de vent te sturen
-int VentRelaisIO=13;                                      // IO13 uitgang van de relais om de vent op max te sturen
-int VentADCIO=33;                                         // IO33 ingang ADC om de startstroom te meten
+#define VentSpeedMin 30                                   // De absolute waarde die we naar de DAC mogen sturen voordat de ventilator stil valt
+#define VentSpeedMax 220                                  // De absolute waarde die we naar de DAC mogen sturen, hoger doet niks meer uit
+#define VentSpeedIO  26                                   // IO26 DAC uitgang om de vent te sturen
+#define VentRelaisIO 13                                   // IO13 uitgang van de relais om de vent op max te sturen
+#define VentADCIO    33                                   // IO33 ingang ADC om de startstroom te meten
+int VentSpeed = 0;                                        // 0-100% 0=VentspeedMin 100%=VentspeedMax
+bool VentOn = false;
+// int Speed=0;                                              // Was vroeger ventspeed
+int VentSpeed255 = 0;                                     // De waarde gemap om door te geven 
 unsigned long VentilatorStartStroom;                      // Waarde Startstroom in de F_Ventilator routine
-unsigned long VentilatorBeginSec=0;                       // Hulp variabele voor de timer om de ventilator activatie te meten
-unsigned long VentilatorEindSec=0;                        // Hulp variabele voor de timer om de ventilator activatie te meten
-RTC_DATA_ATTR unsigned long VentilatorTotaalSec=0;        // Tijd dat de ventilator reeds gedraaid heeft in RAM
-RTC_DATA_ATTR unsigned long VentilatorLaagTotaalSec=0;    // Tijd dat de ventilator reeds gedraaid heeft in RAM
-RTC_DATA_ATTR unsigned long VentilatorHoogTotaalSec=0;    // Tijd dat de ventilator reeds gedraaid heeft in RAM
-RTC_DATA_ATTR unsigned long VentilatorLaagTusTotaalSec=0; // Tijd dat de ventielator reeds gedraaid heeft in lage stand na filter te vervangen
-RTC_DATA_ATTR unsigned long VentilatorHoogTusTotaalSec=0; // Tijd dat de ventielator reeds gedraaid heeft in hoge stand na filter te vervangen
+unsigned long VentilatorBeginSec = 0;                     // Hulp variabele voor de timer om de ventilator activatie te meten
+unsigned long VentilatorEindSec = 0;                      // Hulp variabele voor de timer om de ventilator activatie te meten
+RTC_DATA_ATTR unsigned long VentilatorTotaalSec = 0;      // Tijd dat de ventilator reeds gedraaid heeft in RAM
+RTC_DATA_ATTR unsigned long VentilatorLaagTotaalSec = 0;  // Tijd dat de ventilator reeds gedraaid heeft in RAM
+RTC_DATA_ATTR unsigned long VentilatorHoogTotaalSec = 0;  // Tijd dat de ventilator reeds gedraaid heeft in RAM
+RTC_DATA_ATTR unsigned long VentilatorLaagTusTotaalSec = 0;// Tijd dat de ventielator reeds gedraaid heeft in lage stand na filter te vervangen
+RTC_DATA_ATTR unsigned long VentilatorHoogTusTotaalSec = 0;// Tijd dat de ventielator reeds gedraaid heeft in hoge stand na filter te vervangen
 
 // ----- GEUR SENSOR -----
 int GeurSensorAanUit=0;                                   // Hulp variabele om te weten of de geur sensor aan of uit is
@@ -291,7 +308,7 @@ int GeurToestand=0;                                       // 0= sensor uit 1= aa
 int GeurErrorTeller=0;                                    // Teller voor de sound kunnen te tellen met een geur error
 
 // ----- FILTER -----
-RTC_DATA_ATTR int FilterIO=19;                            // IO19 is de ingang om te zien of de filter aanwezig is
+#define FilterIO 19                                       // IO19 is de ingang om te zien of de filter aanwezig is
 RTC_DATA_ATTR unsigned long FilterVezadegingTijdTeller=0; // telt is seconden maar printing in min
 RTC_DATA_ATTR int FilterIsVerzadigd=0;                    // 0= niet verzadigd 1= verzadigd
 RTC_DATA_ATTR int FilterVerzadegingsFoutTeller=0;         // Teller voor aantal keren de Rled te laten flikkeren als er iemand opzit
@@ -309,8 +326,9 @@ int x=0;                                                  // Voor hulp
 int y=0;                                                  // Voor hulp
 //unsigned long SecMin=60;
 // ----- ERRORS ----- 
-RTC_DATA_ATTR int Error=0;                                // 0=Geen error  1=Filter error   2=Batterij te laag  3=Stroom ventilator 4=Geen afstand sensor 5=Geen geur sensor
-RTC_DATA_ATTR int Minor=0;                                // 0=Geen Minor  6=Filter verzadigd
+RTC_DATA_ATTR int Error = 0;                              // 0=Geen error  1=Filter error   2=Batterij te laag  3=Stroom ventilator 4=Geen afstand sensor 5=Geen geur sensor
+RTC_DATA_ATTR int PrevError = 0;                          // keep track of the previous error, so we can see when the error value has changed (and send a message to mobiles)
+RTC_DATA_ATTR int Minor = 0;                              // 0=Geen Minor  6=Filter verzadigd
 
 // ----- AUDIO -----
 int AudioOnOff=27;                                        // IO27 is de uitgang om de audio aan/uit te zetten
@@ -321,383 +339,416 @@ RTC_DATA_ATTR int SoundGespeeld=0;                        // 0= mag geen audio a
 // ----- WIFI -----
 const char* ssid     = "PURE-D";                          // name of the ap mode  wifi network
 const char* password = "10071984";                        // Paswoord of the ap mode wifi network
-String header;                                            // Wifi hulp
 String output17State = "off";                             // Wifi hulp
 String output18State = "off";                             // Wifi hulp
 const int output17 = 17;                                  // Wifi hulp
 const int output18 = 18;                                  // Wifi hulp
 WiFiServer server(80);                                    // Wifi hulp
-int WifiStatus=0;                                         // Wifi hulp
+WiFiUDP udp;                                              // for processing udp packets
+#define UDP_PORT 45031                                    // the port to use for udp messages  
+uint8_t udpBuffer[300];                                   // buffer for incomming packets from the mobile devices
+unsigned short WifiStatus = 0;                            // 0=not connected, 1=ap mode, 2=connected to wifi
+bool isTryingToConnect = false;                           // true when not yet connected, but still trying to connect (has credentials, but WiFi.status() doesn't yet return connected). This allows us to connect async
+unsigned long startedTryingConnectionAt = 0;              // time when we tried to start the wifi, so we don't try for ever
 
-RTC_DATA_ATTR char[128] home_ssid;                        // wifi network to connect to after initial ap mode
-RTC_DATA_ATTR char[128] home_pwd;                         // pwd of wifi network to connect to after initial ap mode
+RTC_DATA_ATTR char home_ssid[128];                        // wifi network to connect to after initial ap mode
+RTC_DATA_ATTR char home_pwd[128];                         // pwd of wifi network to connect to after initial ap mode
+RTC_DATA_ATTR char system_pwd[128] = "PURE-D";            // pwd assigned by the user to the device, for verifying additional new connections
+#define EEPROM_HOME_SSID_POS 72                           // position of home-ssid in eeprom
 
 // ----- SLEEP -----
  esp_sleep_wakeup_cause_t wakeup_reason;                  // Hoe de ESP32 uit slaap komt 0= eerste keer 2= drukknop 4=na sleep time(5sec)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+void setupPins() {
+    pinMode(FilterIO, INPUT_PULLUP);                        // IO19 pen-31
+    pinMode(DrukknopIO, INPUT);                             // IO32 pen-7
+    pinMode(GeurSensorIO, OUTPUT);                          // IO4  pen-26
+    digitalWrite(GeurSensorIO,LOW);                         // Zet de Geursensor uit
+    pinMode(AfstandI2COnOff, OUTPUT);                       // IO23 pen-37
+    pinMode(LedRoodIO, OUTPUT);                             // IO17 pen-28
+    digitalWrite(LedRoodIO,LOW);                            // Zet de rode led uit
+    pinMode(LedWitIO, OUTPUT);                              // IO18 pen-30
+    digitalWrite(LedWitIO,LOW);                             // Zet de witte led uit
+    pinMode(VentRelaisIO, OUTPUT);                          // IO33 pen-8
+    digitalWrite(VentRelaisIO,LOW);                         // Zet de ventilator relais uit
+    pinMode(AudioOnOff, OUTPUT);                            // IO27 pen-11
+    digitalWrite(AudioOnOff,LOW);                           // Zet de audio module uit
+    digitalWrite(AfstandI2COnOff,HIGH);                     // Zet de afstand sensor aan om onmiddelijk te kunnen testen of deze gaat
+    pinMode(HeartBeadIO, OUTPUT);                           // IO16 pen-27 heartbead lijn naar de batterij
+    digitalWrite(HeartBeadIO, LOW);                         // Geef een laag naar de batterij
+    delay(100);                                             // Wacht 0.1sec
+    digitalWrite(HeartBeadIO, HIGH);                        // Geef een hoog naar de batterij
+}
+
 void setup(){
-  SleepTime=SleepTime-2;                                  // aanpassing want loop duurd 2 sec dus SleepTime - 3sec
-  FilterVervangenOpSec=(FilterVervangenOpMin*60); 
-  pinMode(FilterIO, INPUT_PULLUP);                        // IO19 pen-31
-  pinMode(DrukknopIO, INPUT);                             // IO32 pen-7
-  pinMode(GeurSensorIO, OUTPUT);                          // IO4  pen-26
-  digitalWrite(GeurSensorIO,LOW);                         // Zet de Geursensor uit
-  pinMode(AfstandI2COnOff, OUTPUT);                       // IO23 pen-37
-  pinMode(LedRoodIO, OUTPUT);                             // IO17 pen-28
-  digitalWrite(LedRoodIO,LOW);                            // Zet de rode led uit
-  pinMode(LedWitIO, OUTPUT);                              // IO18 pen-30
-  digitalWrite(LedWitIO,LOW);                             // Zet de witte led uit
-  pinMode(VentRelaisIO, OUTPUT);                          // IO33 pen-8
-  digitalWrite(VentRelaisIO,LOW);                         // Zet de ventilator relais uit
-  pinMode(AudioOnOff, OUTPUT);                            // IO27 pen-11
-  digitalWrite(AudioOnOff,LOW);                           // Zet de audio module uit
-  digitalWrite(AfstandI2COnOff,HIGH);                     // Zet de afstand sensor aan om onmiddelijk te kunnen testen of deze gaat
-  pinMode(HeartBeadIO, OUTPUT);                           // IO16 pen-27 heartbead lijn naar de batterij
-  digitalWrite(HeartBeadIO, LOW);                         // Geef een laag naar de batterij
-  delay(100);                                             // Wacht 0.1sec
-  digitalWrite(HeartBeadIO, HIGH);                        // Geef een hoog naar de batterij
+    SleepTime=SleepTime-2;                                  // aanpassing want loop duurd 2 sec dus SleepTime - 3sec
+    FilterVervangenOpSec=(FilterVervangenOpMin*60); 
+    setupPins();    
 
-  EEPROM.begin(EEPROM_SIZE);                              // Reserveer de x plaatsen in de EEPROM
+    EEPROM.begin(EEPROM_SIZE);                              // Reserveer de x plaatsen in de EEPROM
 
-  dacWrite(VentSpeedIO,VentSpeed);                        // VentSpeed = 0 bij opstarten
-  for(int i=0; i<17; i=i+8)                               // Chip ID uit de ESP32 halen
-  {
-    chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
-  }
+    EEPROMReadWifiInfo();
+    //for debug, now
+    //EEPROMLeegmaken();
+    //till here
 
-  Serial.begin(115200);                                   // Start de seriele verbinding naar de monitor op 115200 baut
-  SerialMP3.begin(9600);                                  // Start de seriele verbindeng naar de audio module op 9600 baut
-  Player.begin(SerialMP3);                                // Geef de audio seriele verbinding de naar Player
+    dacWrite(VentSpeedIO,VentSpeed);                        // VentSpeed = 0 bij opstarten
+    for(int i=0; i<17; i=i+8)                               // Chip ID uit de ESP32 halen
+        chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
 
-  if (!lox.begin())                                       // Start de I2C voor de afstands meting en indien deze niet lukt geef dan error=4
-  {
-    Error=4;
-    Serial.println(F("Failed to boot VL53L0X"));
-    ErrorAfhandeling();
-  }
+    Serial.begin(115200);                                   // Start de seriele verbinding naar de monitor op 115200 baut
+    SerialMP3.begin(9600);                                  // Start de seriele verbindeng naar de audio module op 9600 baut
+    Player.begin(SerialMP3);                                // Geef de audio seriele verbinding de naar Player
 
-  
-  bootCount = bootCount+1;                                // boot teller + 1 (in RTC RAM)
-  if (bootCount==UpdateMemoryBootCounter)                 // Indien de bootCount de ingestelde boootcounter heeft gehaald moet alles naar eeprom geschreven worden
-  {
-    bootCount=0;
-    EEPROMWriteList(); 
-  }
+    //for testing without board:
+    //startApWifi();                                        // we need to start the wifi if it wasn't previously started yet (if not yet configured, the wifi doesn't normally start, but now we are in server mode, so ap-wifi mode is allowed)
+    //runServer();
+    //till here
 
-  WiFi.softAP(ssid, password);                            // Zet de wifi naam en paswoord
-
-  IPAddress IP = WiFi.softAPIP();                         // IP ADRES ESP32 = 192.168.4.1
-  server.begin();                                         // Start de wifi comunicatie
-}
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void loop()
-{
-  esp_sleep_wakeup_cause_t wakeup_reason;                 // Haal de wake_up code op
-  wakeup_reason = esp_sleep_get_wakeup_cause();           
-  UitslaapCode=wakeup_reason;                             // Zet de Wake_up code in UitslaapCode
-
-////// Met Drukknop uit slaap komen //////
-  if (UitslaapCode==2)                                    // kijken of de drukknop is gedruk
-  {
-    Timer_1_Old=(millis());
-    while(digitalRead(DrukknopIO)==1)                     // tellen hoe lang de drukknop is ingedrukt
+    //tryStartClientWifi();                                   // before doing any error handling, try to start the local wifi, so errors can optinally be reported to the mobile (no ap mode at this stage)
+    if (!lox.begin())                                       // Start de I2C voor de afstands meting en indien deze niet lukt geef dan error=4
     {
-     delay(1); 
+        Error=4;
+        Serial.println(F("Failed to boot VL53L0X"));
+        ErrorAfhandeling();
     }
-    Timer_1_New=(millis());
-    Timer_1_Div=Timer_1_New-Timer_1_Old;
 
-    if (Timer_1_Div< 500)                                 // kort gedrukt voor naar test te gaan
-    {
-      Drukknop=1;
-      Systeem=1;
-      Printing();
-      TestDraaien();
-    }
-    if (Timer_1_Div > 500)                                // lang gedrukt voor naar wifi te gaan
-    {
-      Drukknop=2;
-      Systeem=2;
-      Printing();
-      Wifi();
-    }
-  }  
-  attachInterrupt(32, Interup, RISING);                   // Zet de drukknop nu in interup mode met opgaande flank
-
-////// Eerste keer uit slaap gekomen ////// 
-  if ((UitslaapCode==0) and (digitalRead(DrukknopIO)==1)) // Eerste keer uit slaap en de knop is gedrukt dus alle geheugens wissen
-  {
-    EEPROMLeegmaken();
-  }
-  if ((UitslaapCode==0) and (digitalRead(DrukknopIO)==0)) // Eerste keer uit slaap en de knop is niet gedrukt dus batterij is vervangen
-  {
-    EEPROMReadList();  
-    BatterijVervangingen=BatterijVervangingen + 1;        // en hier de waarde in EEPROM uithalen en terug zetten
-    EEPROMWritelong(3,BatterijVervangingen);
-    EEPROM.commit(); 
-    digitalWrite(AudioOnOff,HIGH);                        // Geluid aan zetten
-    delay(2000); 
-    Player.volume(Volume);                                // Zet volume
-    delay(100);
-    Player.play(7);                                       //Geef geluid dat de batterij is vervangen
-    delay(2000); 
-    digitalWrite(AudioOnOff,LOW);                         // Zet audio uit
-  }
-  
-  
-////// Gewoon na X tijd uit slaap komen //////
-  if (Systeem==0)
-  {  
-    ////// LED flikkeren om aan te tonen dat systeem in sleepcycle zit en werkt //////
-      //digitalWrite(LedRoodIO,1);      
-      //delay(10);                    
-      //digitalWrite(LedRoodIO,0);
-      //digitalWrite(LedWitIO,1);
-      //delay(10);
-      //digitalWrite(LedWitIO,0);
-    Drukknop=0;
-    digitalWrite(AfstandI2COnOff,HIGH);                   // Hier al de afstands meeting aan zetten om tijd te sparen    
-    CheckFilter();                                        // Filter checken
-    CheckBat();                                           // Batterij checken
-    CheckAfstand();                                       // Afstand checken
-    ErrorAfhandeling();                                   // errors afhandelen
-  }
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==3)                                         // Er zit iemand op wc en stroom ventilator testen en geursensor aan zetten
-  {
-    digitalWrite(GeurSensorIO,1);                         // Geursensor aan zetten
-    GeurToestand=1;                                       // Geursensor aan het opwarmen voor het uitprinten
-    VentilatorTesten();                                   // Test de ventilator
-    if (FilterVervangingenOld==1)                         // Als de filter is terug geplaats de aaltal vervangingen +1
-    {
-      FilterVervangingenOld=0;
-      FilterVervangingen=FilterVervangingen+1;
-    }
-    if ((Error==0) or (Error==5) or (Error==6))           // Als er geen error is of de geur sensor werkt niet of filter is verzadigd, toch gewoon verder gaan
-    {
-      VentilatorStart(VentSpeedNormaal);
-      if (Systeem!=7)                                     // Als we juist in interupt zijn geweest mag hij niet terug systeem 4 worden
-      {
-        Systeem=4;                                        // Verder gaan
-      }   
-      Printing(); 
-    }
-    else                                                  // Er is een error 
-    {
-      VentilatorStop();                                   // Ventilator stoppen
-      digitalWrite(GeurSensorIO,0);                       // Geursensor uit zetten  
-      GeurToestand=0;                                     // Voor het uitprinten
-      ErrorAfhandeling();
-    }
-  }
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==4)                                         // Ventilator draaid en is ok, tijd starten voor geur meting en afstands meting laten door lopen
-  {
-    Timer_6_Old=millis()+(VentTijdNaarTraag*1000);
-    EvenOpgestaan=0;                                      // pas triggeren als ze wat langer zijn opgestaan
     
-    while ((GeurToestand!=3) and (EvenOpgestaan<2) and (Timer_6_New<Timer_6_Old) and (InterupKnopGedrukt==0)) // evenopgestaan was 4
+    bootCount = bootCount+1;                                // boot teller + 1 (in RTC RAM)
+    if (bootCount==UpdateMemoryBootCounter)                 // Indien de bootCount de ingestelde boootcounter heeft gehaald moet alles naar eeprom geschreven worden
     {
-      digitalWrite(AfstandI2COnOff,HIGH);                 // hier de afstands sensor al aan zetten maar eerst geur aan zetten zodat we wat tijd sparen
-      Geur();                                             // hier heef de afstand sensor de tijd
-      CheckAfstand();                                     // nu pas afstand gaan meten
-      Printing(); 
-      Timer_6_New=millis();
-      if (AfstandSensor!=2)                               // Indien ze even opgestaan zijn
-      {
-        EvenOpgestaan=EvenOpgestaan+1;
-        if (EvenOpgestaan>1)                              // Mag 2 metingen anders zijn dan zitten op de wc 
-        {
-          Systeem=10;                                     // Opgestaan en nalooptijd starten (30sec)
-        }
-      }
-      else
-      {
-        EvenOpgestaan=0;
-      }
+        bootCount=0;
+        EEPROMWriteList(); 
     }
-//************************************     
-    if (GeurToestand==3)                                  // als er stank gemeten is, ga naar systeem 5 
-    {
-      Systeem=5; 
-     }
-//************************************ 
-    if (Timer_6_New>Timer_6_Old)                          // Hier komen we als ze er lang op zitten en gaan we naar systeem 6
-    {
-      Systeem=6; 
-    }
-  
-//************************************ 
-    if (GeurToestand==4)                                  // Hier komen we als er geurtoestand=4 (error op de geur sensor) en moeten toch verder werken
-    {
-      Systeem=13;  
-    }
-  }  
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==5)                                         // Stank en blijven draaien tot er niemand meer op zit
-  {
-      digitalWrite(GeurSensorIO,0);                       // Geursensor uit zetten 
-      GeurToestand=0;                                     // Voor het uitprinten
-      VentilatorStop;                                     // Eerst stoppen voor de berekening
-      VentilatorStart(VentSpeedNormaal);                  // Zet ventilator terug op hoge snelheid
-      digitalWrite(AfstandI2COnOff,HIGH);                 // Afstands sensor terug aan zetten en gaan hier blijven kijken of ze terug opstaan voor verder te gaan
-      delay(500);
-      lox.begin();
-      CheckAfstand();
-      Printing(); 
-      while (AfstandSensor==2)                            // Als er nog iemand opzit blijven draaien
-      {
-        digitalWrite(AfstandI2COnOff,HIGH);
-        delay(500);        
-        lox.begin();
-        CheckAfstand(); 
-      }
-      Systeem=10;                                         // Als ze niet meer zitten gan naar systeem 10
-      Printing();
-  }
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==6)                                         // Zit er al 4 min op en geen stank
-  {
-    VentilatorStop();
-    VentilatorStart(VentSpeedTraag);
-    digitalWrite(AfstandI2COnOff,HIGH);
-    delay(500);        
-    lox.begin();
-    CheckAfstand();
-    Geur();
-    EvenOpgestaan=0;
-    while ((GeurToestand!=3) and (EvenOpgestaan<2 )and (Systeem!=7)) // Als we geen geur hebben en niet opgestaan en geen interup blijven we hier
-    {
-      digitalWrite(AfstandI2COnOff,HIGH);
-      delay(500);        
-      lox.begin();
-      CheckAfstand();
-      Geur();
-      Printing();
-  
-      if (AfstandSensor!=2)
-      {
-        EvenOpgestaan=EvenOpgestaan+1;
-        if (EvenOpgestaan>1)                              // Mag 2 metingen anders zijn dan zitten op de wc 
-        {
-          Systeem=10;                                     // Opgestaan en nalooptijd starten (30sec)
-        }
-      }
-      else
-      {
-        EvenOpgestaan=0;
-      }
-    } 
-    if (GeurToestand==3)                                  // als er stank gemeten is op volle karcht ga naar systeem 5 
-    {
-      Systeem=5; 
-    }
-  }   
-//////////////////////////////////////////////////////////////////////////////////
-if (Systeem==7)                                           // Komen hier via de interup als de drukknop gedrukt is
-{
-  VentilatorStop();
-  digitalWrite(GeurSensorIO,0);                           // Geursensor uit zetten
-  GeurToestand=0;  
-  if (Error==5)                                           // Door de ondebreking kunnen we een error 5 krijgen dat de geur sensor verkeerd gaat meten
-  {
-    Error=0;
-  }
-  Printing();
-  InterupKnopGedrukt=0;
-  Systeem=8;
-}  
-//////////////////////////////////////////////////////////////////////////////////
-if (Systeem==8)
-{
-  while (AfstandSensor==2)
-  {
-    digitalWrite(AfstandI2COnOff,HIGH);
-    delay(4500);        
-    lox.begin();
-    CheckAfstand();
-    delay(500);
-    Printing(); 
-  } 
-  Systeem=0;
-  Printing(); 
 }
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==10)                                        // Opgestaan en VentNaloopTijdOpstaan starten en kijken of deksel dicht gaat
-  {
-    digitalWrite(GeurSensorIO,0);                         // Geursensor uit zetten
-    GeurToestand=0;
-    Printing();
-    Timer_5_New=millis();     
-    Timer_5_Old = (millis()+(VentNaloopTijdOpstaan*1000));
-    while ((Timer_5_New<Timer_5_Old) and (AfstandSensor!=3))
-    {
-      Timer_5_New=millis();
-      digitalWrite(AfstandI2COnOff,HIGH);
-      delay(500);        
-      lox.begin();
-      CheckAfstand();
+
+
+void checkGoToSleep() {
+    if ((Systeem==0) or (Systeem==12)) {
+        //  Printing();
+        if (Systeem==12) {
+            Systeem=0;
+        }
+        sendUdpToSleep();                                   // let the mobiles know we are going to sleep, also shuts down udp
+        detachInterrupt(32);
+        delay(10);
+        esp_sleep_enable_ext0_wakeup(GPIO_NUM_32,1);
+        esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000);
+        digitalWrite(AfstandI2COnOff,LOW);              // zet de afstands meting uit voor stroom te besparen
+        esp_deep_sleep_start();      
     }
-    if (AfstandSensor==3)                                 // Kijken of de deksel dicht gaat
-    {
-      Systeem=11; 
-      Printing(); 
+}
+
+void checkSmellSensorDefect() {
+    if (Systeem==13) {                                       // Geursensor defect maar toch blijven draaien tot ze opstaan
+        digitalWrite(GeurSensorIO,0);                       // Geursensor uit zetten 
+        GeurToestand=4;
+        VentilatorStop(); 
+        VentilatorStart(VentSpeedNormaal);
+        CheckAfstand();
+        broadcastUdpState();                                // ventilator state has changed, let any
+        Printing(); 
+        while (AfstandSensor==2) {
+            digitalWrite(AfstandI2COnOff,HIGH);
+            delayCheckUdp(500);        
+            lox.begin();
+            CheckAfstand();
+            delayCheckUdp(4500); 
+        }
+        Systeem=10;
+        Printing();
     }
-    else                                                  // Deksel niet dicht, gewoon opgestaan en VentNaloopTijdOpstaan is voorbij
-    {
-      VentilatorStop();
-      Systeem=0;    
+}
+
+void checkLitClosed() {
+    if (Systeem==11) {                                       // Opgestaan en deksel is dicht (VentNaloopTijdDekeslDicht na draaien)
+        Timer_5_Old = (millis()+(VentNaloopTijdDekeslDicht*1000));
+        while (Timer_5_New<Timer_5_Old) {
+            checkUdpIncomming();                              // always process any possible udp packets while in the loop so that the device remains responsive to mobile commands
+            Timer_5_New=millis();
+        }
+        VentilatorStop();
+        Systeem=0;
+    } 
+}
+
+void checkUserGotUp() {
+    if (Systeem==10) {                                       // Opgestaan en VentNaloopTijdOpstaan starten en kijken of deksel dicht gaat
+        digitalWrite(GeurSensorIO,0);                         // Geursensor uit zetten
+        GeurToestand=0;
+        Printing();
+        Timer_5_New=millis();     
+        Timer_5_Old = (millis()+(VentNaloopTijdOpstaan*1000));
+        while ((Timer_5_New<Timer_5_Old) and (AfstandSensor!=3)) {
+            Timer_5_New=millis();
+            digitalWrite(AfstandI2COnOff,HIGH);
+            delayCheckUdp(500);        
+            lox.begin();
+            CheckAfstand();
+        }
+        if (AfstandSensor==3) {                               // Kijken of de deksel dicht gaat
+            Systeem=11; 
+            Printing(); 
+        }
+        else {                                                // Deksel niet dicht, gewoon opgestaan en VentNaloopTijdOpstaan is voorbij
+            VentilatorStop();
+            Systeem=0;    
+        }
     }
-  }
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==11)                                        // Opgestaan en deksel is dicht (VentNaloopTijdDekeslDicht na draaien)
-  {
-    Timer_5_Old = (millis()+(VentNaloopTijdDekeslDicht*1000));
-    while (Timer_5_New<Timer_5_Old)
-    {
-      Timer_5_New=millis();
+}
+
+void checkCycleInteruptedWhileSitting() {
+    if (Systeem==8) {
+        while (AfstandSensor==2) {
+            digitalWrite(AfstandI2COnOff,HIGH);
+            delayCheckUdp(4500);        
+            lox.begin();
+            CheckAfstand();
+            delayCheckUdp(500);
+            Printing(); 
+        } 
+        Systeem=0;
+        Printing(); 
     }
-    VentilatorStop();
-    Systeem=0;
-  }
-//////////////////////////////////////////////////////////////////////////////////
-  if (Systeem==13)                                        // Geursensor defect maar toch blijven draaien tot ze opstaan
-  {
-      digitalWrite(GeurSensorIO,0);                       // Geursensor uit zetten 
-      GeurToestand=4;
-      VentilatorStop(); 
-      VentilatorStart(VentSpeedNormaal);
-      CheckAfstand();
-      Printing(); 
-      while (AfstandSensor==2)
-      {
+}
+
+void checkInteruptBtnPressed() {
+    if (Systeem==7)                                           // Komen hier via de interup als de drukknop gedrukt is
+    {
+        VentilatorStop();
+        digitalWrite(GeurSensorIO,0);                           // Geursensor uit zetten
+        GeurToestand=0;  
+        if (Error==5)                                           // Door de ondebreking kunnen we een error 5 krijgen dat de geur sensor verkeerd gaat meten
+        {
+            Error=0;
+        }
+        Printing();
+        InterupKnopGedrukt=0;
+        Systeem=8;
+    } 
+}
+
+void checkUserOnSeatForWhileWithNoSmell() {
+    if (Systeem==6) {                                        // Zit er al 4 min op en geen stank
+        VentilatorStop();
+        VentilatorStart(VentSpeedTraag);
         digitalWrite(AfstandI2COnOff,HIGH);
-        delay(500);        
+        delayCheckUdp(500);        
         lox.begin();
         CheckAfstand();
-        delay(4500); 
-      }
-      Systeem=10;
-      Printing();
-  }  
-//////////////////////////////////////////////////////////////////////////////////
-  if ((Systeem==0) or (Systeem==12))
-  {
-//  Printing();
-  if (Systeem==12)
-  {
-    Systeem=0;
-  }
-  detachInterrupt(32);
-  delay(10);
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_32,1);
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000);
-  digitalWrite(AfstandI2COnOff,LOW);              // zet de afstands meting uit voor stroom te besparen
-  esp_deep_sleep_start();      
-  }
+        Geur();
+        EvenOpgestaan=0;
+        while ((GeurToestand!=3) and (EvenOpgestaan<2 ) and (Systeem!=7)) {     // Als we geen geur hebben en niet opgestaan en geen interup blijven we hier
+            digitalWrite(AfstandI2COnOff,HIGH);
+            delayCheckUdp(500);        
+            lox.begin();
+            CheckAfstand();
+            Geur();
+            Printing();
+        
+            if (AfstandSensor!=2) {
+                EvenOpgestaan=EvenOpgestaan+1;
+                if (EvenOpgestaan>1) {                                          // Mag 2 metingen anders zijn dan zitten op de wc 
+                    Systeem=10;                                                 // Opgestaan en nalooptijd starten (30sec)
+                }
+            }
+            else EvenOpgestaan=0;
+        } 
+        if (GeurToestand==3) Systeem = 5;                                       // als er stank gemeten is op volle karcht ga naar systeem 5  
+    }
 }
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void removeSmells() {
+    if (Systeem==5) {                                       // Stank en blijven draaien tot er niemand meer op zit
+        digitalWrite(GeurSensorIO,0);                       // Geursensor uit zetten 
+        GeurToestand=0;                                     // Voor het uitprinten
+        VentilatorStop;                                     // Eerst stoppen voor de berekening
+        VentilatorStart(VentSpeedNormaal);                  // Zet ventilator terug op hoge snelheid
+        digitalWrite(AfstandI2COnOff,HIGH);                 // Afstands sensor terug aan zetten en gaan hier blijven kijken of ze terug opstaan voor verder te gaan
+        delayCheckUdp(500);
+        lox.begin();
+        CheckAfstand();
+        Printing(); 
+        while (AfstandSensor==2) {                           // Als er nog iemand opzit blijven draaien
+            digitalWrite(AfstandI2COnOff,HIGH);
+            delayCheckUdp(500);        
+            lox.begin();
+            CheckAfstand(); 
+        }
+        Systeem=10;                                         // Als ze niet meer zitten gan naar systeem 10
+        Printing();
+    }
+}
+
+void checkUsage() {
+    if (Systeem==4)                                         // Ventilator draaid en is ok, tijd starten voor geur meting en afstands meting laten door lopen
+    {
+        Timer_6_Old=millis()+(VentTijdNaarTraag*1000);
+        EvenOpgestaan=0;                                      // pas triggeren als ze wat langer zijn opgestaan
+        
+        while ((GeurToestand!=3) and (EvenOpgestaan<2) and (Timer_6_New<Timer_6_Old) and (InterupKnopGedrukt==0)) // evenopgestaan was 4
+        {
+            digitalWrite(AfstandI2COnOff,HIGH);                 // hier de afstands sensor al aan zetten maar eerst geur aan zetten zodat we wat tijd sparen
+            Geur();                                             // hier heef de afstand sensor de tijd
+            CheckAfstand();                                     // nu pas afstand gaan meten
+            Printing(); 
+            Timer_6_New=millis();
+            if (AfstandSensor != 2)                               // Indien ze even opgestaan zijn
+            {
+                EvenOpgestaan = EvenOpgestaan + 1;
+                if (EvenOpgestaan>1)                              // Mag 2 metingen anders zijn dan zitten op de wc 
+                    Systeem=10;                                     // Opgestaan en nalooptijd starten (30sec)
+            }
+            else
+                EvenOpgestaan=0;
+        }
+        if (GeurToestand==3)                                  // als er stank gemeten is, ga naar systeem 5 
+            Systeem=5; 
+        if (Timer_6_New>Timer_6_Old)                          // Hier komen we als ze er lang op zitten en gaan we naar systeem 6
+            Systeem=6; 
+        if (GeurToestand==4)                                  // Hier komen we als er geurtoestand=4 (error op de geur sensor) en moeten toch verder werken
+            Systeem=13;  
+    }
+} 
+
+void testVent() {
+    if (Systeem==3)                                         // Er zit iemand op wc en stroom ventilator testen en geursensor aan zetten
+    {
+        digitalWrite(GeurSensorIO,1);                         // Geursensor aan zetten
+        GeurToestand=1;                                       // Geursensor aan het opwarmen voor het uitprinten
+        VentilatorTesten();                                   // Test de ventilator
+        if (FilterVervangingenOld==1)                         // Als de filter is terug geplaats de aaltal vervangingen +1
+        {
+            FilterVervangingenOld=0;
+            FilterVervangingen=FilterVervangingen+1;
+        }
+        if ((Error==0) or (Error==5) or (Error==6))           // Als er geen error is of de geur sensor werkt niet of filter is verzadigd, toch gewoon verder gaan
+        {
+            VentilatorStart(VentSpeedNormaal);
+            if (Systeem!=7)                                     // Als we juist in interupt zijn geweest mag hij niet terug systeem 4 worden
+                Systeem=4;                                        // Verder gaan
+            Printing(); 
+        }
+        else                                                  // Er is een error 
+        {
+            VentilatorStop();                                   // Ventilator stoppen
+            digitalWrite(GeurSensorIO,0);                       // Geursensor uit zetten  
+            GeurToestand=0;                                     // Voor het uitprinten
+            ErrorAfhandeling();
+        }
+    }
+}
+
+/**
+ * Met Drukknop uit slaap komen
+ */
+void checkAndPrepWakeupFromBtn() {
+    if (UitslaapCode==2)                                        // kijken of de drukknop is gedruk
+    {
+        Timer_1_Old=(millis());
+        while(digitalRead(DrukknopIO)==1)                       // tellen hoe lang de drukknop is ingedrukt
+        {
+            checkUdpIncomming();                                // always process any possible udp packets while in the loop so that the device remains responsive to mobile commands
+            delay(1); 
+        }
+        Timer_1_New=(millis());
+        Timer_1_Div=Timer_1_New-Timer_1_Old;
+
+        if (Timer_1_Div< 500)                                   // kort gedrukt voor naar test te gaan
+        {
+            Drukknop=1;
+            Systeem=1;
+            Printing();
+            TestDraaien();
+        }
+        if (Timer_1_Div > 500)                                  // lang gedrukt voor naar wifi te gaan
+        {
+            Drukknop=2;
+            Systeem=2;
+            Printing();
+            if (hasWifiSettings()) {
+                if (WifiStatus == 0) {                          // not yet fully started, so wait till it is.
+                    if (!isTryingToConnect)                     // the wifi is not yet started, so do now
+                        tryStartClientWifi();
+                    WifiMode=1;                                 // this allows us to check if the user pressed the button again before we were able to start the wifi completely
+                    while(!checkWifiConnected(true) && WifiMode==1)
+                        delay(100);
+                    if (WifiStatus == 0)                        // failed to connect to local wifi, start in ap mode instead
+                        startApWifi();
+                }
+            }
+            else 
+                startApWifi();                                  // we need to start the wifi if it wasn't previously started yet (if not yet configured, the wifi doesn't normally start, but now we are in server mode, so ap-wifi mode is allowed)
+            runServer();
+            tryStartClientWifi();                               // server mode is done, start back up in sta mode and try to connect. this makes certain we are no longer a server
+            delayCheckUdp(5000);                                // before going back to sleep, give this device and the mobile device a little time to connect to the router and communicate with each other
+        }
+    }  
+    attachInterrupt(32, Interup, RISING);                       // Zet de drukknop nu in interup mode met opgaande flank
+}
+
+/**
+ * to do when woken up
+ */
+void checkWakeFromSleep() {
+    if ((UitslaapCode==0) and (digitalRead(DrukknopIO)==1))   // Eerste keer uit slaap en de knop is gedrukt dus alle geheugens wissen
+        EEPROMLeegmaken();
+    if ((UitslaapCode==0) and (digitalRead(DrukknopIO)==0)) { // Eerste keer uit slaap en de knop is niet gedrukt dus batterij is vervangen
+        EEPROMReadList();  
+        BatterijVervangingen=BatterijVervangingen + 1;        // en hier de waarde in EEPROM uithalen en terug zetten
+        EEPROMWritelong(3,BatterijVervangingen);
+        EEPROM.commit(); 
+        digitalWrite(AudioOnOff,HIGH);                        // Geluid aan zetten
+        delayCheckUdp(2000); 
+        Player.volume(Volume);                                // Zet volume
+        delayCheckUdp(100);
+        Player.play(7);                                       //Geef geluid dat de batterij is vervangen
+        delayCheckUdp(2000); 
+        digitalWrite(AudioOnOff,LOW);                         // Zet audio uit
+    }
+    // Gewoon na X tijd uit slaap komen?
+    if (Systeem==0) {  
+        ////// LED flikkeren om aan te tonen dat systeem in sleepcycle zit en werkt //////
+        //digitalWrite(LedRoodIO,1);      
+        //delay(10);                    
+        //digitalWrite(LedRoodIO,0);
+        //digitalWrite(LedWitIO,1);
+        //delay(10);
+        //digitalWrite(LedWitIO,0);
+        Drukknop=0;
+        digitalWrite(AfstandI2COnOff,HIGH);                   // Hier al de afstands meeting aan zetten om tijd te sparen    
+        CheckFilter();                                        // Filter checken
+        CheckBat();                                           // Batterij checken
+        CheckAfstand();                                       // Afstand checken
+        if (Systeem==3) {
+            tryStartClientWifi();                             // only start the wifi when someone is on the toilet, this saves battery
+        }   
+        ErrorAfhandeling();                                   // errors afhandelen
+    }
+}
+
+void loop()
+{
+    esp_sleep_wakeup_cause_t wakeup_reason;                 // Haal de wake_up code op
+    wakeup_reason = esp_sleep_get_wakeup_cause();           
+    UitslaapCode=wakeup_reason;                             // Zet de Wake_up code in UitslaapCode
+    checkAndPrepWakeupFromBtn();
+    checkWakeFromSleep(); 
+    testVent();
+    checkUsage();
+    removeSmells();
+    checkUserOnSeatForWhileWithNoSmell();
+    checkInteruptBtnPressed();
+    checkCycleInteruptedWhileSitting();
+    checkUserGotUp();
+    checkLitClosed();
+    checkSmellSensorDefect();
+    checkGoToSleep();
+}
+
 void Interup()
 {
   InterupKnopGedrukt=1;
