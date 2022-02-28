@@ -15,15 +15,26 @@ void processFilterError() {
     Serial.println("*****************************");
     Serial.println("*    FILTER NIET AANWEZIG   *");
     Serial.println("*****************************");
+    if (isTryingToConnect == false && WifiStatus == 0)          // we have a serious error that needs to be reported. this can happen at setup (device starts up), at which point wifi isn't started yet, so do it now
+        tryStartClientWifi();
     digitalWrite(GeurSensorIO, 0);                               // Geursensor uit zetten  
     VentilatorStop();
     digitalWrite(AudioOnOff, LOW);                               // Geluid uit zetten
     digitalWrite(AfstandI2COnOff, HIGH);                         // Afstand sensor aan zetten
     delayCheckUdp(500);
+    if (WifiStatus == 2 && Error != PrevError) {             // if we connected and have not send the status update, do this now
+        broadcastUdpState();
+        PrevError = Error;                                  // keep track changes so we can send a new status update when done
+    }   
     ErrorOldAfstandSensor = 0;
     OldAfstandSensor = 4;
     while (digitalRead(FilterIO)==1)                            // In deze lus blijven tot filter is terug geplaats, om de 30 sec witte led en als men opstaat geluid.
     {
+        checkUdpIncomming();
+        if (WifiStatus == 2 && Error != PrevError) {             // if we connected and have not send the status update, do this now
+            broadcastUdpState();
+            PrevError = Error;                                  // keep track changes so we can send a new status update when done
+        }   
         ErrorLedFlikkeren();
         ErrorAfstansmeting();  
         if ((ErrorOldAfstandSensor!=2) and (AfstandSensor==2))   // Alleen geluid spelen als er iemand gaat op zitten
@@ -39,6 +50,7 @@ void processFilterError() {
     FilterVezadegingTijdTeller=0;                               // Tijd teller van de filter op 0 zetten
     VentilatorLaagTusTotaalSec=0;
     VentilatorHoogTusTotaalSec=0;
+    broadcastUdpState();                                        // the state has changed
 }
 
 void processBatteryLow() {

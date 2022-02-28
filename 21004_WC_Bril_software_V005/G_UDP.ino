@@ -22,6 +22,8 @@ void sendDevState(IPAddress address, bool includeHist) {
     packet += VentOn ? "true" : "false";
     packet += ", \"firmwareVer\": ";
     packet += SOFWAREVERSION;
+    packet += ", \"server\": ";
+    packet += ( WifiMode == 1 ? "true" : "false");
     if (includeHist) {
         packet += ", \"bootCount\": ";
         packet += bootCount;
@@ -100,7 +102,7 @@ void sendUdpToSleep() {
         udp.beginPacket(broadcastAdrs, UDP_PORT);
         udp.write((const uint8_t*)packet.c_str(), packet.length());
         udp.endPacket();
-        delay(250);                                                 // need to give the radio a little time to send the message
+        delay(350);                                                 // need to give the radio a little time to send the message
         udp.stop();
     }
 }

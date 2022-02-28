@@ -195,6 +195,7 @@ void tryStartClientWifi() {
     if (hasWifiSettings()) {
         Serial.println("Connecting to WiFi in sta mode");
         WiFi.begin(home_ssid, home_pwd);
+        startedTryingConnectionAt = millis();
         checkWifiConnected(true);
     }
     else {
@@ -215,8 +216,9 @@ bool checkWifiConnected(bool logNotConnected) {
     else {
         //Serial.println("Connection failed");
         WifiStatus = 0;
-        isTryingToConnect = true;
-        if (logNotConnected)
+        unsigned long now = millis();
+        isTryingToConnect = now - startedTryingConnectionAt < 5000;
+        if (isTryingToConnect && logNotConnected)
             Serial.println("not yet connected to wifi, retrying...");
         return false;
     }
