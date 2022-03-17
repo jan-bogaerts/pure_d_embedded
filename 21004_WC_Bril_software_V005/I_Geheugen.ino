@@ -116,6 +116,7 @@ void EEPROMWriteList()
     EEPROMWritelong(15,FilterVezadegingTijdTeller);
     EEPROMWritelong(16,FilterVervangingen);     
     EEPROMWritelong(17,VentNaloopTijdOpstaan);     
+    EEPROMWritelong(18,VentSpeedNormaal);     
 
     EEPROM.commit();
     Serial.println(" "); 
@@ -153,6 +154,11 @@ void EEPROMReadList()
     FilterVezadegingTijdTeller=EEPROMReadlong(15);
     FilterVervangingen=EEPROMReadlong(16);
     VentNaloopTijdOpstaan=EEPROMReadlong(17);
+    VentSpeedNormaal=EEPROMReadlong(18);
+
+    if (VentSpeedNormaal == 0) {                                        // when flash has been reset, some values can be 0, which we don't want                            
+        VentSpeedNormaal = 50;
+    }
 
     if (VentNaloopTijdOpstaan == 0) {                                   // when flash has been reset, some values can be 0, which we don't want     
         VentNaloopTijdOpstaan = 30;

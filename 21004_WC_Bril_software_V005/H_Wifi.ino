@@ -170,6 +170,7 @@ void runServer()
                 }
             }
             header = "";                                                                // Clear the header variable
+            delay(100);
             client.stop();                                                              // Close the connection
             Serial.println("Client disconnected.");
             Serial.println("");
@@ -178,7 +179,7 @@ void runServer()
             checkUdpIncomming();                                                        // when adding an existing device, the mobile sends out an udp discovery packet, which we need to be able to handle
         }
     }
-    delay(500);                                                                         // need to give the other side a little time before we stop completly and drop the wifi network (if in ap mode), which would give the other side errors
+    delay(400);                                                                         // need to give the other side a little time before we stop completly and drop the wifi network (if in ap mode), which would give the other side errors
     Serial.println("server ended");
     digitalWrite(LedWitIO,0);
     WifiMode=0;

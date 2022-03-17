@@ -354,7 +354,8 @@ unsigned long startedTryingConnectionAt = 0;              // time when we tried 
 RTC_DATA_ATTR char home_ssid[128];                        // wifi network to connect to after initial ap mode
 RTC_DATA_ATTR char home_pwd[128];                         // pwd of wifi network to connect to after initial ap mode
 RTC_DATA_ATTR char system_pwd[128] = "PURE-D";            // pwd assigned by the user to the device, for verifying additional new connections
-#define EEPROM_HOME_SSID_POS 72                           // position of home-ssid in eeprom
+#define EEPROM_HOME_SSID_POS 76                           // position of home-ssid in eeprom
+RTC_NOINIT_ATTR int REBOOT_AFTER_ENROLL = 0;              // set to 1 when the system just did a restart after configuring wifi.
 
 // ----- SLEEP -----
  esp_sleep_wakeup_cause_t wakeup_reason;                  // Hoe de ESP32 uit slaap komt 0= eerste keer 2= drukknop 4=na sleep time(5sec)
@@ -394,6 +395,9 @@ void setup(){
     //for debug, now
     //EEPROMLeegmaken();
     //till here
+    if (REBOOT_AFTER_ENROLL == 1) {                         // rebooted after enrollement/server config, try to connect to wifi asap so device knows we are connected to network
+        tryStartClientWifi();
+    }
 
     dacWrite(VentSpeedIO,VentSpeed);                        // VentSpeed = 0 bij opstarten
     for(int i=0; i<17; i=i+8)                               // Chip ID uit de ESP32 halen
@@ -403,12 +407,6 @@ void setup(){
     SerialMP3.begin(9600);                                  // Start de seriele verbindeng naar de audio module op 9600 baut
     Player.begin(SerialMP3);                                // Geef de audio seriele verbinding de naar Player
 
-    //for testing without board:
-    //startApWifi();                                        // we need to start the wifi if it wasn't previously started yet (if not yet configured, the wifi doesn't normally start, but now we are in server mode, so ap-wifi mode is allowed)
-    //runServer();
-    //till here
-
-    //tryStartClientWifi();                                   // before doing any error handling, try to start the local wifi, so errors can optinally be reported to the mobile (no ap mode at this stage)
     if (!lox.begin())                                       // Start de I2C voor de afstands meting en indien deze niet lukt geef dan error=4
     {
         Error=4;
@@ -683,8 +681,12 @@ void checkAndPrepWakeupFromBtn() {
             else 
                 startApWifi();                                  // we need to start the wifi if it wasn't previously started yet (if not yet configured, the wifi doesn't normally start, but now we are in server mode, so ap-wifi mode is allowed)
             runServer();
-            tryStartClientWifi();                               // server mode is done, start back up in sta mode and try to connect. this makes certain we are no longer a server
-            delayCheckUdp(5000);                                // before going back to sleep, give this device and the mobile device a little time to connect to the router and communicate with each other
+            if (WifiStatus == 2)                                // make certain that ap mode is off, otherwise he mobile might remain connected to the esp, which is bad
+                WiFi.softAPdisconnect (true);
+            //tryStartClientWifi();                               // server mode is done, start back up in sta mode and try to connect. this makes certain we are no longer a server
+            delayCheckUdp(400);                                // before going back to sleep, give this device and the mobile device a little time to connect to the router and communicate with each other
+            REBOOT_AFTER_ENROLL = 1;
+            ESP.restart();
         }
     }  
     attachInterrupt(32, Interup, RISING);                       // Zet de drukknop nu in interup mode met opgaande flank
@@ -726,8 +728,12 @@ void checkWakeFromSleep() {
         if (Systeem==3) {
             tryStartClientWifi();                             // only start the wifi when someone is on the toilet, this saves battery
         }   
+        else if (REBOOT_AFTER_ENROLL == 1) {                  // give the mobile and device some time to communicate
+            delayCheckUdp(15000);
+        }
         ErrorAfhandeling();                                   // errors afhandelen
     }
+    REBOOT_AFTER_ENROLL = 0;
 }
 
 void loop()

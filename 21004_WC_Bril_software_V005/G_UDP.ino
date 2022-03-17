@@ -149,7 +149,7 @@ void processActuationCommand(IPAddress sender, String prop, String value) {
             VentilatorStart(VentSpeedNormaal);
         else 
             sendDevState(sender, false);                        // let mobile know that value was set
-        // don't save the data immediatly, this is done every 12 hours anyway, stick to this in order not to ware out the flash
+        EEPROMWriteList();
     }
     else if (prop == "ventAfterTime") {
         if (value == "20") 
@@ -161,6 +161,7 @@ void processActuationCommand(IPAddress sender, String prop, String value) {
         Serial.print("set ventAfterTime: ");
         Serial.println(VentNaloopTijdOpstaan);
         sendDevState(sender, false);                        // let mobile know that value was set
+        EEPROMWriteList();
     }
     
 }
@@ -206,7 +207,7 @@ void delayCheckUdp(uint32_t ms) {
     }
     else {
         unsigned long start = millis();
-        unsigned long div = abs(millis() - start);
+        unsigned long div = 0;
         while (div < ms) {
             checkUdpIncomming();
             div = abs(millis() - start);
